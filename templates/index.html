@@ -76,6 +76,33 @@
             margin-top: 0.25rem;
             box-sizing: border-box;
         }
+        #fileName {
+            margin-top: 0.25rem;
+            text-align: center;
+            color: #555;
+            font-size: 0.9rem;
+            word-break: break-all;
+        }
+
+        #candidates {
+            margin-top: 0.5rem;
+            text-align: center;
+        }
+
+        #candidates button {
+            width: auto;
+            margin: 0.25rem;
+            padding: 0.4rem 0.75rem;
+            background-color: #6c757d;
+        }
+
+        #candidates button:hover {
+            background-color: #545b62;
+        }
+
+        #unitList small {
+            color: #777;
+        }
     </style>
 </head>
 <body>
@@ -84,16 +111,18 @@
     <form id="uploadForm" enctype="multipart/form-data">
         <input type="file" id="fileInput" name="photo" accept="image/*" capture="environment" required />
         <label for="fileInput">Vybrat soubor</label>
+        <div id="fileName"></div>
         <button type="submit">Nahrát</button>
     </form>
 
     <p id="loadingMessage" style="display: none;">Zpracovávám obrázek, čekejte…</p>
 
-    <div id="result" style="display: none;">
+    <form id="result" style="display: none;">
         <label for="recognizedNumber">Rozpoznané číslo (můžeš upravit):</label><br/>
-        <input type="text" id="recognizedNumber" name="recognizedNumber" />
-        <button id="saveBtn">Uložit</button>
-    </div>
+        <input type="text" id="recognizedNumber" name="recognizedNumber" inputmode="numeric" maxlength="7" autocomplete="off" />
+        <div id="candidates"></div>
+        <button type="submit" id="saveBtn">Uložit</button>
+    </form>
 
     <p id="saveMessage"></p>
 
@@ -101,85 +130,150 @@
         <h2>Seznam jednotek</h2>
         <ul id="unitList"></ul>
     </div>
-    
+
     <script>
         const uploadForm = document.getElementById('uploadForm');
-        const resultDiv = document.getElementById('result');
+        const fileInput = document.getElementById('fileInput');
+        const fileName = document.getElementById('fileName');
+        const resultForm = document.getElementById('result');
         const recognizedNumberInput = document.getElementById('recognizedNumber');
-        const saveBtn = document.getElementById('saveBtn');
+        const candidatesDiv = document.getElementById('candidates');
         const saveMessage = document.getElementById('saveMessage');
         const loadingMessage = document.getElementById('loadingMessage');
-        const unitList = document.getElementById('unitList'); // <-- tady
-    
+        const unitList = document.getElementById('unitList');
+        let sourceFile = '';
+
+        async function errorText(response, fallback) {
+            try {
+                const data = await response.json();
+                return data.error || fallback;
+            } catch {
+                return fallback;
+            }
+        }
+
+        function addUnit(number, timestamp) {
+            const li = document.createElement('li');
+            li.textContent = number;
+            if (timestamp) {
+                const small = document.createElement('small');
+                small.textContent = ' – ' + new Date(timestamp).toLocaleString('cs-CZ');
+                li.appendChild(small);
+            }
+            unitList.appendChild(li);
+        }
+
+        function showCandidates(candidates) {
+            candidatesDiv.textContent = '';
+            if (candidates.length < 2) return;
+            const hint = document.createElement('div');
+            hint.textContent = 'Nalezeno více čísel, vyber správné:';
+            candidatesDiv.appendChild(hint);
+            for (const candidate of candidates) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = candidate;
+                btn.addEventListener('click', () => {
+                    recognizedNumberInput.value = candidate;
+                    recognizedNumberInput.focus();
+                });
+                candidatesDiv.appendChild(btn);
+            }
+        }
+
+        async function loadUnits() {
+            try {
+                const response = await fetch('/units');
+                if (!response.ok) return;
+                const data = await response.json();
+                unitList.textContent = '';
+                for (const unit of data.units) {
+                    addUnit(unit.number, unit.timestamp);
+                }
+            } catch {
+                // Seznam se nepodařilo načíst – nevadí, nové záznamy se přidají po uložení
+            }
+        }
+
+        fileInput.addEventListener('change', () => {
+            fileName.textContent = fileInput.files.length ? fileInput.files[0].name : '';
+        });
+
         uploadForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             saveMessage.textContent = '';
-            resultDiv.style.display = 'none';
+            resultForm.style.display = 'none';
             loadingMessage.style.display = 'block';
-    
+
             const formData = new FormData(uploadForm);
-    
+
             try {
                 const response = await fetch('/upload', {
                     method: 'POST',
                     body: formData
                 });
-    
+
                 loadingMessage.style.display = 'none';
-    
+
                 if (response.ok) {
                     const data = await response.json();
+                    sourceFile = data.source_file || '';
+                    showCandidates(data.candidates || []);
                     if (data.recognized_number) {
                         recognizedNumberInput.value = data.recognized_number;
-                        resultDiv.style.display = 'block';
                     } else {
                         saveMessage.textContent = 'Číslo nebylo rozpoznáno, zadej ho ručně.';
                         recognizedNumberInput.value = '';
-                        resultDiv.style.display = 'block';
                     }
+                    resultForm.style.display = 'block';
+                    recognizedNumberInput.focus();
                 } else {
-                    saveMessage.textContent = 'Chyba při nahrávání fotky.';
+                    saveMessage.textContent = await errorText(response, 'Chyba při nahrávání fotky.');
                 }
             } catch (error) {
                 loadingMessage.style.display = 'none';
                 saveMessage.textContent = 'Chyba při komunikaci se serverem.';
             }
         });
-    
-        saveBtn.addEventListener('click', async () => {
-            const number = recognizedNumberInput.value.trim();
+
+        resultForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const number = recognizedNumberInput.value.replace(/[\s-]/g, '');
             if (!/^\d{6}$/.test(number)) {
                 saveMessage.textContent = 'Číslo musí mít přesně 6 číslic.';
                 return;
             }
-    
+
             const formData = new FormData();
             formData.append('number', number);
-    
+            formData.append('source_file', sourceFile);
+
             try {
                 const response = await fetch('/save', {
                     method: 'POST',
                     body: formData
                 });
-    
+
                 if (response.ok) {
                     const data = await response.json();
                     saveMessage.textContent = `Číslo ${data.saved_number} bylo uloženo.`;
-    
-                    // Přidat do seznamu
-                    const li = document.createElement('li');
-                    li.textContent = data.saved_number;
-                    unitList.appendChild(li);
-    
+                    addUnit(data.saved_number, data.timestamp);
+
                     recognizedNumberInput.value = '';
-                    resultDiv.style.display = 'none';
+                    candidatesDiv.textContent = '';
+                    resultForm.style.display = 'none';
+                    uploadForm.reset();
+                    fileName.textContent = '';
+                    sourceFile = '';
                 } else {
-                    saveMessage.textContent = 'Chyba při ukládání čísla.';
+                    saveMessage.textContent = await errorText(response, 'Chyba při ukládání čísla.');
                 }
             } catch (error) {
                 saveMessage.textContent = 'Chyba při komunikaci se serverem.';
             }
         });
+
+        loadUnits();
     </script>
 </body>
 </html>
